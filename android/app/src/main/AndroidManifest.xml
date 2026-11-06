@@ -1,0 +1,18 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- 局域网传输与广播权限 -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
+    <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE" />
+    
+    <!-- 安卓扫码需要相机权限 -->
+    <uses-permission android:name="android.permission.CAMERA" />
+
+    <application
+        android:label="LanDrop"
+        android:name="${applicationName}"
+        android:icon="@mipmap/ic_launcher"
+        android:usesCleartextTraffic="true"> <!-- 允许局域网 HTTP 明文传输 -->
+        <activity
+            android:name=".MainActivity"
+            ...
