@@ -1,0 +1,55 @@
+name: Build Desktop Portable Release
+
+on:
+  push:
+    branches:
+      - main
+      - master
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build-windows:
+    runs-on: windows-2022
+
+    steps:
+      - name: 複製程式碼
+        uses: actions/checkout@v4
+
+      - name: 配置 Flutter 環境
+        uses: subosito/flutter-action@v2
+        with:
+          channel: 'stable'
+          flutter-version: '3.24.x'
+
+      - name: 啟用 Windows 桌面端支援
+        run: flutter config --enable-windows-desktop
+
+      # 🔥 終極修正：加上 --project-name 參數，徹底解決 GitHub 倉庫帶橫槓 - 導致命名非法（code-mix）的問題
+      - name: 自動補全 Windows 平台專案結構
+        run: flutter create --platforms=windows --project-name=code_mix .
+
+      - name: 獲取依賴套件
+        run: flutter pub get
+
+      - name: 編譯綠色便攜版 (Release)
+        run: flutter build windows --release
+
+      # 🔥 核心修正：改用 Windows 自帶的 PowerShell 指令進行打包，徹底解決 zip command not found 的問題
+      - name: 打包成 ZIP 壓縮檔
+        run: |
+          Compress-Archive -Path build\windows\x64\runner\Release\* -DestinationPath repomix-flutter-windows-portable.zip -Force
+
+      - name: 自動發布到 GitHub Release
+        uses: softprops/action-gh-release@v2
+
+        with:
+          files: repomix-flutter-windows-portable.zip
+          tag_name: latest
+          name: "Repomix 便攜免安裝版"
+          body: "這是由 GitHub Actions 自動編譯生成的 Windows 綠色便攜版，解壓點擊 exe 即可執行。"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
