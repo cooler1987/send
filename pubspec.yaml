@@ -1,22 +1,28 @@
-name: code_mix
-description: A fully responsive portable codebase packer for LLM prompts.
+name: lan_drop
+description: "High performance LAN transfer tool for Android & Windows"
+publish_to: "none"
 version: 1.0.0+1
 
 environment:
-  sdk: '>=3.0.0 <4.0.0'
+  sdk: ">=3.0.0 <4.0.0"
 
 dependencies:
   flutter:
     sdk: flutter
-  file_picker: ^8.1.7         # 彈出 Windows 資料夾選擇器
-  path: ^1.9.0                # 跨平台路徑解析
-  archive: ^3.6.1             # 讀取解壓上傳的 .zip 檔
-  desktop_drop: ^0.5.0        # 🔥 新增：支援 Windows 桌面拖放檔案/資料夾
-  window_manager: ^0.4.3      # 🔥 新增：支援控制 Windows 初始視窗大小與位置
+  # 文件选择与保存路径
+  file_picker: ^8.1.4
+  path_provider: ^2.1.4
+  path: ^1.9.0
+  # 二维码生成与扫描
+  qr_flutter: ^4.1.0
+  mobile_scanner: ^5.2.3 # 仅在 Android 上调用摄像头
+  # 校验与数据流
+  crypto: ^3.0.5
 
 dev_dependencies:
   flutter_test:
     sdk: flutter
+  flutter_lints: ^4.0.0
 
 flutter:
   uses-material-design: true
