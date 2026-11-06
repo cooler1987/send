@@ -1,0 +1,105 @@
+name: Build & Release LanDrop
+
+on:
+  push:
+    tags:
+      - 'v*' # 当推送类似 v1.0.0 的 tag 时自动触发打包发布
+  workflow_dispatch: # 支持在 GitHub 网页上手动点击按钮触发打包
+
+permissions:
+  contents: write # 赋予创建 Release 和上传附件的权限
+
+jobs:
+  # ================= 任务 1: 构建 Android APK =================
+  build-android:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 检出源码
+        uses: actions/checkout@v4
+
+      - name: 配置 Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: 安装 Flutter 环境
+        uses: subosito/flutter-action@v2
+        with:
+          channel: 'stable'
+          cache: true
+
+      - name: 获取依赖
+        run: flutter pub get
+
+      - name: 构建通用 Release APK
+        run: flutter build apk --release
+
+      - name: 重命名 APK 文件
+        run: mv build/app/outputs/flutter-apk/app-release.apk LanDrop-Android.apk
+
+      - name: 暂存 APK 产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-apk
+          path: LanDrop-Android.apk
+
+  # ================= 任务 2: 构建 Windows 绿色便携包 =================
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - name: 检出源码
+        uses: actions/checkout@v4
+
+      - name: 安装 Flutter 环境
+        uses: subosito/flutter-action@v2
+        with:
+          channel: 'stable'
+          cache: true
+
+      - name: 获取依赖
+        run: flutter pub get
+
+      - name: 编译 Windows Release
+        run: flutter build windows --release
+
+      - name: 压缩为 PC 绿色免安装 Zip 包
+        shell: pwsh
+        run: |
+          # 将编译好的 Release 文件夹打包压缩为 zip
+          Compress-Archive -Path build\windows\x64\runner\Release\* -DestinationPath LanDrop-Windows-Portable.zip
+
+      - name: 暂存 Windows 压缩包
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-portable
+          path: LanDrop-Windows-Portable.zip
+
+  # ================= 任务 3: 发布 Release 并挂载成品 =================
+  publish-release:
+    needs: [build-android, build-windows]
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/')
+    steps:
+      - name: 检出源码
+        uses: actions/checkout@v4
+
+      - name: 下载 Android 构建产物
+        uses: actions/download-artifact@v4
+        with:
+          name: android-apk
+
+      - name: 下载 Windows 构建产物
+        uses: actions/download-artifact@v4
+        with:
+          name: windows-portable
+
+      - name: 自动创建 GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          draft: false
+          prerelease: false
+          generate_release_notes: true
+          files: |
+            LanDrop-Android.apk
+            LanDrop-Windows-Portable.zip
