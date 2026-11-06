@@ -28,11 +28,18 @@ jobs:
         run: |
           flutter create . --platforms=android --project-name=lan_drop
 
-      # 2. 自动注入网络与摄像头权限
+      # 2. 自动注入权限配置（自动识别 build.gradle 还是 build.gradle.kts）
       - name: 自动注入权限配置
         run: |
+          # 注入权限到 AndroidManifest.xml
           sed -i '/<application/i \    <uses-permission android:name="android.permission.INTERNET" />\n    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />\n    <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />\n    <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE" />\n    <uses-permission android:name="android.permission.CAMERA" />' android/app/src/main/AndroidManifest.xml
-          sed -i 's/minSdkVersion .*/minSdkVersion 21/' android/app/build.gradle
+          
+          # 判断文件是 build.gradle 还是 build.gradle.kts 并修改 minSdkVersion
+          if [ -f "android/app/build.gradle.kts" ]; then
+            sed -i 's/minSdk = .*/minSdk = 21/' android/app/build.gradle.kts
+          elif [ -f "android/app/build.gradle" ]; then
+            sed -i 's/minSdkVersion .*/minSdkVersion 21/' android/app/build.gradle
+          fi
 
       # 3. 依赖并打包
       - run: flutter pub get
