@@ -11,10 +11,19 @@ import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 import 'package:qr_flutter/qr_flutter.dart';
 
-// ==================== 全局常量与配置 ====================
+// ==================== 全局常量与轻量哈希汇聚器 ====================
 const int kHttpPort = 8848;
 const int kDiscoveryPort = 8849;
 const String kProtocolMagic = "LANDROP_PING";
+
+// 用于无内存压力的流式 Hash 校验 Sink
+class _DigestSink implements Sink<Digest> {
+  Digest? value;
+  @override
+  void add(Digest data) => value = data;
+  @override
+  void close() {}
+}
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -133,7 +142,6 @@ class LanEngine extends ChangeNotifier {
         includeLinkLocal: false,
       );
       for (var iface in interfaces) {
-        // 排除常见的虚拟网卡干扰
         if (!iface.name.toLowerCase().contains('vmware') &&
             !iface.name.toLowerCase().contains('virtual') &&
             !iface.name.toLowerCase().contains('wsl')) {
@@ -150,7 +158,7 @@ class LanEngine extends ChangeNotifier {
     }
   }
 
-  // 2. 内嵌 HTTP 服务（处理大文件流、断点续传、Web 门户）
+  // 2. 内嵌 HTTP 服务
   Future<void> _startHttpServer() async {
     try {
       _server = await HttpServer.bind(InternetAddress.anyIPv4, kHttpPort);
@@ -164,7 +172,6 @@ class LanEngine extends ChangeNotifier {
   Future<void> _handleHttpRequest(HttpRequest request) async {
     final path = request.uri.path;
 
-    // 跨域支持
     request.response.headers.add('Access-Control-Allow-Origin', '*');
     request.response.headers.add('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
     request.response.headers.add('Access-Control-Allow-Headers', '*');
@@ -176,7 +183,6 @@ class LanEngine extends ChangeNotifier {
     }
 
     try {
-      // 场景 1: Web 端主页 (无客户端时扫码打开网页下载/上传)
       if (path == '/' || path == '/index.html') {
         request.response.headers.contentType = ContentType.html;
         request.response.write(_generateWebPortalHtml());
@@ -184,7 +190,6 @@ class LanEngine extends ChangeNotifier {
         return;
       }
 
-      // 场景 2: Web 端获取分享文件列表
       if (path == '/api/shared-files') {
         final list = webSharedFiles.map((f) => {
           'name': p.basename(f.path),
@@ -196,7 +201,7 @@ class LanEngine extends ChangeNotifier {
         return;
       }
 
-      // 场景 3: 支持断点续传 (Range) 的文件流式下载
+      // Range 断点续传流式下载
       if (path.startsWith('/download/')) {
         final index = int.tryParse(path.replaceFirst('/download/', ''));
         if (index != null && index >= 0 && index < webSharedFiles.length) {
@@ -206,7 +211,6 @@ class LanEngine extends ChangeNotifier {
         }
       }
 
-      // 场景 4: 接收文本/剪贴板消息
       if (path == '/api/message' && request.method == 'POST') {
         final content = await utf8.decoder.bind(request).join();
         final json = jsonDecode(content);
@@ -217,7 +221,7 @@ class LanEngine extends ChangeNotifier {
         return;
       }
 
-      // 场景 5: 接收大文件/切片流式上传 (零内存溢出 + Hash 校验)
+      // 接收大文件流式上传 (零内存溢出)
       if (path == '/api/upload' && request.method == 'POST') {
         await _handleIncomingStreamUpload(request);
         return;
@@ -232,13 +236,16 @@ class LanEngine extends ChangeNotifier {
     }
   }
 
-  // 大文件流式下载 + Range 断点续传
+  // 大文件流式下载 + Range 支持 (已修复：直接使用 file.openRead)
   Future<void> _serveFileWithRange(HttpRequest request, File file) async {
     final fileSize = await file.length();
     final rangeHeader = request.headers.value('range');
 
     request.response.headers.add('Accept-Ranges', 'bytes');
-    request.response.headers.add('Content-Disposition', 'attachment; filename="${Uri.encodeComponent(p.basename(file.path))}"');
+    request.response.headers.add(
+      'Content-Disposition',
+      'attachment; filename="${Uri.encodeComponent(p.basename(file.path))}"',
+    );
 
     if (rangeHeader != null && rangeHeader.startsWith('bytes=')) {
       final parts = rangeHeader.substring(6).split('-');
@@ -249,10 +256,8 @@ class LanEngine extends ChangeNotifier {
       request.response.headers.add('Content-Range', 'bytes $start-$end/$fileSize');
       request.response.contentLength = (end - start) + 1;
 
-      final raf = await file.open(mode: FileMode.read);
-      await raf.setPosition(start);
-      await request.response.addStream(raf.openRead(start, end + 1));
-      await raf.close();
+      // 直接通过 File 的 openRead 切片流式输出
+      await request.response.addStream(file.openRead(start, end + 1));
     } else {
       request.response.statusCode = HttpStatus.ok;
       request.response.contentLength = fileSize;
@@ -261,9 +266,11 @@ class LanEngine extends ChangeNotifier {
     await request.response.close();
   }
 
-  // 流式接收处理并计算校验
+  // 流式接收处理 (已修复：使用纯原生 _DigestSink)
   Future<void> _handleIncomingStreamUpload(HttpRequest request) async {
-    final fileName = Uri.decodeComponent(request.headers.value('X-File-Name') ?? 'unnamed_${DateTime.now().millisecondsSinceEpoch}.bin');
+    final fileName = Uri.decodeComponent(
+      request.headers.value('X-File-Name') ?? 'unnamed_${DateTime.now().millisecondsSinceEpoch}.bin',
+    );
     final relativePath = Uri.decodeComponent(request.headers.value('X-Relative-Path') ?? '');
     final totalSize = int.tryParse(request.headers.value('X-File-Size') ?? '0') ?? 0;
     final expectedHash = request.headers.value('X-Checksum');
@@ -292,12 +299,13 @@ class LanEngine extends ChangeNotifier {
     int lastBytes = resumeOffset;
     DateTime lastTime = DateTime.now();
 
-    final md5Sink = md5.startChunkedConversion(AccumulatorSink<Digest>());
+    final digestSink = _DigestSink();
+    final md5Input = md5.startChunkedConversion(digestSink);
 
     try {
       await for (final chunk in request) {
         await raf.writeFrom(chunk);
-        md5Sink.add(chunk);
+        md5Input.add(chunk);
         task.currentBytes += chunk.length;
 
         final now = DateTime.now();
@@ -310,15 +318,15 @@ class LanEngine extends ChangeNotifier {
         }
       }
       await raf.close();
+      md5Input.close();
 
       task.isDone = true;
       task.speed = 0;
 
-      // 哈希完整性核对
-      if (expectedHash != null && resumeOffset == 0) {
-        md5Sink.close();
-        // final actualHash = output.events.single.toString();
-        // 如果校验不匹配可在此标记
+      if (expectedHash != null && resumeOffset == 0 && digestSink.value != null) {
+        if (digestSink.value.toString().toLowerCase() != expectedHash.toLowerCase()) {
+          task.error = "MD5 校验不匹配";
+        }
       }
 
       request.response.statusCode = HttpStatus.ok;
@@ -355,7 +363,6 @@ class LanEngine extends ChangeNotifier {
                 final data = jsonDecode(jsonStr);
                 final dev = DeviceInfo.fromJson(data);
 
-                // 避免自己被记录
                 if (dev.ip != localIp) {
                   discoveredDevices[dev.ip] = dev;
                   notifyListeners();
@@ -366,7 +373,6 @@ class LanEngine extends ChangeNotifier {
         }
       });
 
-      // 定时广播自身存活
       _broadcastTimer = Timer.periodic(const Duration(seconds: 2), (_) {
         _broadcastSelf();
       });
@@ -390,13 +396,12 @@ class LanEngine extends ChangeNotifier {
     } catch (_) {}
   }
 
-  // 4. 客户端主动发文件（流式 + 支持文件夹递归）
+  // 4. 客户端主动发文件 (流式传输，零内存溢出)
   Future<void> sendFiles(DeviceInfo target, List<String> paths) async {
     final client = HttpClient();
 
     for (final path in paths) {
       if (FileSystemEntity.isDirectorySync(path)) {
-        // 递归文件夹
         final dir = Directory(path);
         final baseName = p.basename(dir.path);
         final entities = dir.listSync(recursive: true);
@@ -438,20 +443,21 @@ class LanEngine extends ChangeNotifier {
       int lastBytes = 0;
       DateTime lastTime = DateTime.now();
 
-      // 流式管道写入，零内存缓存
       final stream = file.openRead();
-      await req.addStream(stream.map((chunk) {
-        task.currentBytes += chunk.length;
-        final now = DateTime.now();
-        final ms = now.difference(lastTime).inMilliseconds;
-        if (ms >= 500) {
-          task.speed = ((task.currentBytes - lastBytes) / 1024) / (ms / 1000);
-          lastBytes = task.currentBytes;
-          lastTime = now;
-          notifyListeners();
-        }
-        return chunk;
-      }));
+      await req.addStream(
+        stream.map((chunk) {
+          task.currentBytes += chunk.length;
+          final now = DateTime.now();
+          final ms = now.difference(lastTime).inMilliseconds;
+          if (ms >= 500) {
+            task.speed = ((task.currentBytes - lastBytes) / 1024) / (ms / 1000);
+            lastBytes = task.currentBytes;
+            lastTime = now;
+            notifyListeners();
+          }
+          return chunk;
+        }),
+      );
 
       final res = await req.close();
       if (res.statusCode == HttpStatus.ok) {
@@ -467,7 +473,7 @@ class LanEngine extends ChangeNotifier {
     }
   }
 
-  // 5. 快速发送文本/剪贴板
+  // 5. 快速发送文本
   Future<void> sendMessage(DeviceInfo target, String text) async {
     try {
       final client = HttpClient();
@@ -489,7 +495,6 @@ class LanEngine extends ChangeNotifier {
     }
   }
 
-  // 内嵌轻量 Web Portal HTML（扫码即用）
   String _generateWebPortalHtml() {
     return '''
     <!DOCTYPE html>
@@ -610,7 +615,6 @@ class _MainScreenState extends State<MainScreen> {
     );
   }
 
-  // Tab 1: 设备列表
   Widget _buildPeersTab() {
     final devices = engine.discoveredDevices.values.toList();
     if (devices.isEmpty) {
@@ -675,7 +679,6 @@ class _MainScreenState extends State<MainScreen> {
     );
   }
 
-  // Tab 2: 传输任务列表
   Widget _buildTransfersTab() {
     if (engine.activeTasks.isEmpty) {
       return const Center(child: Text("当前无传输任务"));
@@ -722,7 +725,6 @@ class _MainScreenState extends State<MainScreen> {
     );
   }
 
-  // Tab 3: Web 扫码免客户端共享管理
   Widget _buildWebShareTab() {
     final webUrl = "http://${engine.localIp}:$kHttpPort";
     return Column(
@@ -787,7 +789,6 @@ class _MainScreenState extends State<MainScreen> {
     );
   }
 
-  // Tab 4: 局域网即时聊天与剪贴板列表
   Widget _buildMessagesTab() {
     final controller = TextEditingController();
     return Column(
@@ -846,7 +847,6 @@ class _MainScreenState extends State<MainScreen> {
     );
   }
 
-  // 模态弹窗：显示二维码
   void _showQrModal(BuildContext context, String data) {
     showDialog(
       context: context,
@@ -864,7 +864,6 @@ class _MainScreenState extends State<MainScreen> {
     );
   }
 
-  // 手动直连对话框 (应对网络隔离)
   void _showManualConnectDialog(BuildContext context) {
     final ipController = TextEditingController();
     showDialog(
@@ -899,7 +898,6 @@ class _MainScreenState extends State<MainScreen> {
     );
   }
 
-  // 安卓端扫码页面
   void _openScanner(BuildContext context) {
     Navigator.of(context).push(
       MaterialPageRoute(
