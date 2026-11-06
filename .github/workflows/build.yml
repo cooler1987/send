@@ -1,105 +1,91 @@
-name: Build & Release LanDrop
+name: Pure Single File Build
 
 on:
   push:
     tags:
-      - 'v*' # 当推送类似 v1.0.0 的 tag 时自动触发打包发布
-  workflow_dispatch: # 支持在 GitHub 网页上手动点击按钮触发打包
+      - 'v*'
+  workflow_dispatch:
 
 permissions:
-  contents: write # 赋予创建 Release 和上传附件的权限
+  contents: write
 
 jobs:
-  # ================= 任务 1: 构建 Android APK =================
-  build-android:
+  # ================= 安卓构建（云端自动生成 Android 壳并打包） =================
+  android:
     runs-on: ubuntu-latest
     steps:
-      - name: 检出源码
-        uses: actions/checkout@v4
-
-      - name: 配置 Java 17
-        uses: actions/setup-java@v4
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
         with:
           distribution: 'temurin'
           java-version: '17'
-
-      - name: 安装 Flutter 环境
-        uses: subosito/flutter-action@v2
+      - uses: subosito/flutter-action@v2
         with:
           channel: 'stable'
-          cache: true
 
-      - name: 获取依赖
-        run: flutter pub get
+      # 1. 自动生成标准安卓工程结构（保证是最新规范，不会再有 v1 embedding 报错）
+      - name: 自动补齐原生平台壳工程
+        run: |
+          flutter create . --platforms=android --project-name=lan_drop
 
-      - name: 构建通用 Release APK
-        run: flutter build apk --release
+      # 2. 自动注入网络与摄像头权限
+      - name: 自动注入权限配置
+        run: |
+          sed -i '/<application/i \    <uses-permission android:name="android.permission.INTERNET" />\n    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />\n    <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />\n    <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE" />\n    <uses-permission android:name="android.permission.CAMERA" />' android/app/src/main/AndroidManifest.xml
+          sed -i 's/minSdkVersion .*/minSdkVersion 21/' android/app/build.gradle
 
-      - name: 重命名 APK 文件
-        run: mv build/app/outputs/flutter-apk/app-release.apk LanDrop-Android.apk
+      # 3. 依赖并打包
+      - run: flutter pub get
+      - run: flutter build apk --release
+      - run: mv build/app/outputs/flutter-apk/app-release.apk LanDrop-Android.apk
 
-      - name: 暂存 APK 产物
-        uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v4
         with:
           name: android-apk
           path: LanDrop-Android.apk
 
-  # ================= 任务 2: 构建 Windows 绿色便携包 =================
-  build-windows:
+  # ================= Windows 构建（云端自动生成 Windows 壳并打包） =================
+  windows:
     runs-on: windows-latest
     steps:
-      - name: 检出源码
-        uses: actions/checkout@v4
-
-      - name: 安装 Flutter 环境
-        uses: subosito/flutter-action@v2
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
         with:
           channel: 'stable'
-          cache: true
 
-      - name: 获取依赖
-        run: flutter pub get
+      # 自动生成标准 Windows 工程结构
+      - name: 自动补齐 Windows 平台壳工程
+        run: |
+          flutter create . --platforms=windows --project-name=lan_drop
 
-      - name: 编译 Windows Release
-        run: flutter build windows --release
+      - run: flutter pub get
+      - run: flutter build windows --release
 
-      - name: 压缩为 PC 绿色免安装 Zip 包
+      - name: 压缩为 PC 绿色免安装包
         shell: pwsh
         run: |
-          # 将编译好的 Release 文件夹打包压缩为 zip
           Compress-Archive -Path build\windows\x64\runner\Release\* -DestinationPath LanDrop-Windows-Portable.zip
 
-      - name: 暂存 Windows 压缩包
-        uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v4
         with:
           name: windows-portable
           path: LanDrop-Windows-Portable.zip
 
-  # ================= 任务 3: 发布 Release 并挂载成品 =================
-  publish-release:
-    needs: [build-android, build-windows]
+  # ================= 自动挂载成品到 Releases =================
+  release:
+    needs: [android, windows]
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/')
     steps:
-      - name: 检出源码
-        uses: actions/checkout@v4
-
-      - name: 下载 Android 构建产物
-        uses: actions/download-artifact@v4
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
         with:
           name: android-apk
-
-      - name: 下载 Windows 构建产物
-        uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v4
         with:
           name: windows-portable
-
-      - name: 自动创建 GitHub Release
-        uses: softprops/action-gh-release@v2
+      - uses: softprops/action-gh-release@v2
         with:
-          draft: false
-          prerelease: false
-          generate_release_notes: true
           files: |
             LanDrop-Android.apk
             LanDrop-Windows-Portable.zip
